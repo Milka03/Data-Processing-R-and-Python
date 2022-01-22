@@ -1,0 +1,550 @@
+---
+title: "Data Processing in R & Python"
+subtitle: "Homework Assignment 1"
+author: "Emilia Wróblewska"
+date: "December 4, 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Loading libraries and data
+(Note: The .rmd file must be placed in the same directory as packed .csv files with data and requires all listed packages to be already installed.)
+
+```{r message=FALSE, warning=FALSE}
+library("knitr")
+library("rmarkdown")
+library("markdown")
+library("sqldf")
+library("data.table")
+library("dplyr")
+# to suppress summarise() ungrouping output message
+options(dplyr.summarise.inform = FALSE)
+
+options(stringAsFactors=FALSE)
+Badges <- read.csv("Badges.csv.gz")
+Posts <- read.csv("Posts.csv.gz")
+Users <- read.csv("Users.csv.gz")
+Votes <- read.csv("Votes.csv.gz")
+
+BadgesDT <- setDT(read.csv("Badges.csv.gz"))
+PostsDT <- setDT(read.csv("Posts.csv.gz"))
+UsersDT <- setDT(read.csv("Users.csv.gz"))
+VotesDT <- setDT(read.csv("Votes.csv.gz"))
+```
+
+Through the entire report I will be using the comparison function defined below. It uses `dplyr::all_equal()` to compare the results of my solutions with the reference query result to ensure the correctness of obtained answers.
+```{r}
+compare_results <- function(query, s_base, s_dt, s_dplyr) {
+  base_sol <- dplyr::all_equal(query, s_base)
+  if (base_sol) print(paste("Base R solution eqivalent to query result:", base_sol))
+  
+  dt_sol <- dplyr::all_equal(query, s_dt)
+  if (dt_sol) print(paste("data.table solution eqivalent to query result:", dt_sol))
+  
+  dplyr_sol <- dplyr::all_equal(query, s_dplyr)
+  if (dplyr_sol) print(paste("dplyr solution eqivalent to query result:", dplyr_sol))
+
+  if (base_sol && dt_sol && dplyr_sol) print("All solutions passed the tests.")
+}
+```
+
+# 1) SQL Query 1
+### Reference solution
+```{r}
+sql1 <- function() {
+  sqldf("
+  SELECT
+      Name,
+      COUNT(*) AS Number,
+      MIN(Class) AS BestClass
+  FROM Badges
+  GROUP BY Name
+  ORDER BY Number DESC
+  LIMIT 10")
+}
+sql1()
+```
+
+**Intuitive interpretation** \
+This query simply counts the number of badges of each name and returns 10 most frequently occurring badges along with their best (minimal) class and number of occurrences.
+
+### Base R solution
+```{r}
+sql1_base <- function() {
+  BadgesNames <- aggregate(Badges[,c('Name', 'Class')], by = Badges[c('Name','Class')], FUN = length)
+  colnames(BadgesNames)[c(2,3,4)] = c('BestClass','Number', 'Duplicate')
+  BadgesNames <- aggregate(BestClass ~ Name+Number, data = BadgesNames, FUN = function(x) min(x))
+  answer <- BadgesNames[order(BadgesNames$Number, decreasing = T), ]
+  rownames(answer) = NULL
+  head(answer, 10)
+}
+```
+
+### data.table solution
+```{r}
+sql1_dt <- function() {
+  BadgesDT[, .(Number = .N, BestClass = min(Class)), by = Name][order(-Number)][1:10]
+}
+```
+
+### dplyr solution
+```{r}
+sql1_dplyr <- function() {
+  Badges %>%
+    group_by(Name) %>%
+    select(Name, Class) %>%
+    summarise(Number = n(), BestClass = min(Class)) %>%
+    arrange(desc(Number)) %>%
+    head(10)
+}
+```
+
+### Accuracy tests
+```{r message=FALSE, warning=FALSE}
+compare_results(sql1(), sql1_base(), sql1_dt(), sql1_dplyr())
+```
+
+### Speed tests
+```{r message=FALSE, warning=FALSE}
+microbenchmark::microbenchmark(
+  sqldf = sql1(),
+  base = sql1_base(),
+  data.table = sql1_dt(),
+  dplyr = sql1_dplyr(),
+  unit = "ms"
+)
+```
+### Comments
+The first query was quite simple and the functions in all solutions follow pretty much the same order as in the SQL query. The data.table solution is the fastest and also my favorite, since it has a very clear and short syntax. However, the dplyr solution is also quite fast and the syntax is similar to SQL, which makes it really intuitive to write. 
+
+
+# 2) SQL Query 2
+### Reference solution
+```{r}
+sql2 <- function() {
+  sqldf("
+  SELECT Location, COUNT(*) AS Count
+  FROM (
+      SELECT Posts.OwnerUserId, Users.Id, Users.Location
+      FROM Users
+      JOIN Posts ON Users.Id = Posts.OwnerUserId
+      )
+  WHERE Location NOT IN ('')
+  GROUP BY Location
+  ORDER BY Count DESC
+  LIMIT 10")
+}
+sql2()
+```
+
+**Intuitive interpretation** \
+This query returns 10 most frequently occurring locations of users who shared any Post (i.e. are present in the `Posts` table). It counts only locations which are not empty and shows the locations along with their numbers of occurrences.
+
+
+### Base R solution
+```{r}
+sql2_base <- function() {
+  joined <- merge(Users[Users$Location != '', c('Id', 'Location')], Posts, 
+                  by.x = "Id", by.y = "OwnerUserId")
+  answer <- aggregate(joined['Location'], by = joined['Location'], FUN = length)
+  colnames(answer)[2] = "Count"
+  answer <- answer[order(answer$Count, decreasing = T), ]
+  rownames(answer) = NULL
+  head(answer, 10)
+}
+```
+
+### data.table solution
+```{r}
+sql2_dt <- function() {
+  joined <- UsersDT[, .(Id, Location)][PostsDT, on = c(Id = "OwnerUserId")]
+  joined[Location != '', .(Count = .N), by = Location][order(-Count)][1:10]
+}
+```
+
+### dplyr solution
+```{r}
+sql2_dplyr <- function() {
+  inner_join(select(Users, c(Id,Location)), Posts, c("Id" = "OwnerUserId")) %>%
+    filter(Location != '') %>%
+    group_by(Location) %>%
+    summarise(Count = n()) %>%
+    arrange(desc(Count)) %>%
+    head(10)
+}
+```
+
+### Accuracy tests
+```{r message=FALSE, warning=FALSE}
+compare_results(sql2(), sql2_base(), sql2_dt(), sql2_dplyr())
+```
+
+### Speed tests
+```{r message=FALSE, warning=FALSE}
+microbenchmark::microbenchmark(
+  sqldf = sql2(),
+  base = sql2_base(),
+  data.table = sql2_dt(),
+  dplyr = sql2_dplyr(),
+  unit = "ms"
+)
+```
+### Comments
+This query was a little bit more difficult than the first one, since it required joining two tables to obtain the final result. My biggest struggle here was finding the right *join* operation during the implementation of dplyr solution. There are quite a few options for joining the data frames in dplyr (like `left_join`, `right_join`, `full_join`) and I wanted to stick as close as possible to the original query result, so I used the inner_join which keeps only rows that match in both tables. As for the speed tests, the data.table solution was again the fastest and the dplyr solution a little slower, but without noticeable difference.
+
+
+
+# 3) SQL Query 3
+### Reference solution
+```{r}
+sql3 <- function() {
+  sqldf("
+  SELECT
+      Users.AccountId,
+      Users.DisplayName,
+      Users.Location,
+      AVG(PostAuth.AnswersCount) as AverageAnswersCount
+  FROM
+  (
+      SELECT
+          AnsCount.AnswersCount,
+          Posts.Id,
+          Posts.OwnerUserId
+      FROM (
+              SELECT Posts.ParentId, COUNT(*) AS AnswersCount
+              FROM Posts
+              WHERE Posts.PostTypeId = 2
+              GROUP BY Posts.ParentId
+            ) AS AnsCount
+      JOIN Posts ON Posts.Id = AnsCount.ParentId
+  ) AS PostAuth
+  JOIN Users ON Users.AccountId=PostAuth.OwnerUserId
+  GROUP BY OwnerUserId
+  ORDER BY AverageAnswersCount DESC
+  LIMIT 10")
+}
+sql3()
+```
+
+**Intuitive interpretation** \
+In general, this query displays the information (`AccoutnId`, `DisplayName` and `Location`) about first 10 users with the highest average number of answers to their posts. It firstly counts the number of answers (`PostTypeId = 2`) under each post that was answered and each such post is matched with its owner in the `Users` table. Then, the query calculates the average number of answers under all posts owned by each user and finally shows the appropriate information about each user along with their average answers count.
+
+### Base R solution
+```{r}
+sql3_base <- function() {
+  PostsType2 <- Posts[Posts$PostTypeId == 2, ]
+  AnsCount <- aggregate(PostsType2['ParentId'], by = PostsType2['ParentId'], FUN = length)
+  colnames(AnsCount)[2] = "AnswersCount"
+  joined <- merge(Posts, AnsCount, by.x = "Id", by.y = "ParentId")
+  PostAuth <- joined[, c('AnswersCount', 'Id', 'OwnerUserId')]
+  joined2 <- merge(Users, PostAuth, by.x = "AccountId", by.y = "OwnerUserId")
+  joined2 <- joined2[, c('AccountId', 'DisplayName', 'Location', 'AnswersCount')]
+  aggrMean <- do.call(data.frame, aggregate(AnswersCount ~ AccountId,
+                      data = joined2,
+                      FUN = function(x) mean(x)))
+  joined3 <- merge(aggrMean, joined2, by.x = c('AccountId', 'AnswersCount'), 
+                   by.y = c('AccountId', 'AnswersCount'))
+  colnames(joined3)[2] <- "AverageAnswersCount"
+  answer <- joined3[order(joined3$AverageAnswersCount, decreasing = T), ]
+  answer <- answer[, c('AccountId', 'DisplayName', 'Location', 'AverageAnswersCount')]
+  rownames(answer) = NULL
+  head(answer, 10)
+}
+```
+
+### data.table solution
+```{r}
+sql3_dt <- function() {
+  AnsCount <- PostsDT[PostTypeId == 2, .(AnswersCount = .N), by = ParentId]
+  joined <- PostsDT[AnsCount, on = c(Id = "ParentId")]
+  PostAuth <- joined[, .(AnswersCount, Id, OwnerUserId)]
+  joinedPost <- UsersDT[PostAuth, on = c(AccountId = "OwnerUserId")]
+  joinedPost <- na.omit(joinedPost, cols = c('AnswersCount', 'Id'))
+  joinedPost[, .(DisplayName, Location, AverageAnswersCount = mean(AnswersCount)), 
+             by = AccountId][order(-AverageAnswersCount, -AccountId)][1:10]
+}
+```
+
+### dplyr solution
+```{r}
+sql3_dplyr <- function() {
+  filter(Posts, PostTypeId == 2) %>%
+    group_by(ParentId) %>%
+    summarise(AnswersCount = n()) %>%
+    inner_join(Posts, c("ParentId" = "Id")) %>% 
+    select(AnswersCount, Id = ParentId, OwnerUserId) %>%
+    left_join(Users, c("OwnerUserId" = "AccountId")) %>%
+    na.omit %>%
+    group_by(OwnerUserId) %>%
+    mutate(AverageAnswersCount = mean(AnswersCount)) %>%
+    select(AverageAnswersCount, AccountId = OwnerUserId, DisplayName, Location) %>%
+    arrange(desc(AverageAnswersCount), desc(AccountId)) %>%
+    head(10)
+}
+```
+
+### Accuracy tests
+```{r message=FALSE, warning=FALSE}
+compare_results(sql3(), sql3_base(), sql3_dt(), sql3_dplyr())
+```
+
+### Speed tests
+Here, I decided to reduce the number of microbenchmark calls from default 100 to 50, since it speeds up the generation of the report without affecting the quality and the results of the tests. 
+```{r message=FALSE, warning=FALSE}
+microbenchmark::microbenchmark(
+  sqldf = sql3(),
+  base = sql3_base(),
+  data.table = sql3_dt(),
+  dplyr = sql3_dplyr(),
+  times = 50, unit = "ms"
+)
+```
+
+### Comments
+This query was a bit similar to the previous one, since it also counted the appropriate data in joined tables. The most challenging was the base R solution, because the final answer contained columns which couldn't be included in the *by* argument of the `aggregate()` function and were lost during the aggregation. Hence, I had to add those columns again by combining the result of the second join and the aggregated data frame. That is why I prefer the data.table and dplyr solutions - there is an option to select needed columns during aggregation and they are much shorter to write. \
+When it comes to the speed, the data.table solution was again the fastest, however this time with quite big difference compared to other solutions. The dplyr answer was only slightly better than the base R version of the query. 
+
+
+# 4) SQL Query 4
+### Reference solution
+```{r}
+sql4 <- function() {
+  sqldf("
+  SELECT
+      Posts.Title,
+      UpVotesPerYear.Year,
+      MAX(UpVotesPerYear.Count) AS Count
+  FROM (
+          SELECT
+              PostId,
+              COUNT(*) AS Count,
+              STRFTIME('%Y', Votes.CreationDate) AS Year
+          FROM Votes
+          WHERE VoteTypeId=2
+          GROUP BY PostId, Year
+      ) AS UpVotesPerYear
+  JOIN Posts ON Posts.Id=UpVotesPerYear.PostId
+  WHERE Posts.PostTypeId=1
+  GROUP BY Year
+  ORDER BY Year ASC")
+}
+sql4()
+```
+
+**Intuitive interpretation** \
+This query firstly calculates the number of up votes (`VoteTypeId = 2`) for each post in every recorded year. Then it filters only *question* posts (`PostTypeId = 1`) and finally, for each year it shows the title of the post which has obtained the most up votes during this year along with the calculated number of up votes.
+
+
+### Base R solution
+```{r}
+sql4_base <- function() {
+  VotesType2 <- Votes[Votes$VoteTypeId == 2, ]
+  # Previously, I used format(as.Date()), to obtain the year:
+  # VotesType2$Year <- format(as.Date(VotesType2$CreationDate), "%Y")
+  
+  VotesType2$Year <- substr(VotesType2$CreationDate, 1, 4)
+  UpVotesPerYear <- aggregate(VotesType2[,c('PostId','Year')], 
+                              by = VotesType2[,c('PostId','Year')], FUN = length)
+  colnames(UpVotesPerYear)[c(3,4)] = c("Count","Duplicate")
+  joined1 <- merge(Posts[Posts$PostTypeId == 1,], UpVotesPerYear, by.x = "Id", by.y = "PostId")
+  answer <- aggregate(Count ~ Title+Year, data = joined1, FUN = max)
+  
+  # Alternatively, the "result" variable can be calculated like that:
+  # result <- do.call(rbind, by(answer, answer$Year, FUN=function(answer) answer[which.max(answer$Count),]))
+  result <- answer[answer$Count == ave(answer$Count, answer$Year, FUN=max),]
+  rownames(result) = NULL
+  result
+}
+```
+
+### data.table solution
+```{r}
+sql4_dt <- function() {
+  UpVotesPerYear <- VotesDT[VoteTypeId == 2, .(PostId, Year = substr(CreationDate, 1, 4))
+                            ][, .(Count = .N), by = .(PostId, Year)]
+  joined <- PostsDT[UpVotesPerYear, on = c(Id = "PostId")]
+  joined[PostTypeId == 1, .SD[which.max(Count)], by = Year][, .(Title, Year, Count)][order(Year)]
+}
+```
+
+
+### dplyr solution
+```{r}
+sql4_dplyr <- function() {
+  filter(Votes, VoteTypeId == 2) %>%
+    transmute(PostId, Year = substr(CreationDate, 1, 4)) %>%
+    group_by(PostId, Year) %>%
+    summarise(Count = n()) %>%
+    left_join(Posts, c("PostId" = "Id")) %>%
+    filter(PostTypeId == 1) %>%
+    group_by(Year) %>%
+    select(Title, Year, Count) %>%
+    summarise(Title = Title[which.max(Count)], Count = max(Count))
+}
+```
+
+### Accuracy tests
+```{r message=FALSE, warning=FALSE}
+compare_results(sql4(), sql4_base(), sql4_dt(), sql4_dplyr())
+```
+
+### Speed tests
+In this case, I had to reduce the number of microbenchmark calls to only 10. This comes from the fact that the reference solution requires operation on the `Votes` table, which has almost a million records and hence, is several times larger than every other used table. Performing any operation on such large amount of records is time-consuming, therefore, all functions for this task are significantly slower than in the previous cases and the generation of the report would probably take hours with the default 100 microbenchmark calls. So to avoid this scenario, I reduced the number of calls to 10 and also changed the display unit to seconds for the clearer results presentation. 
+```{r message=FALSE, warning=FALSE}
+microbenchmark::microbenchmark(
+  sqldf = sql4(),
+  base = sql4_base(),
+  data.table = sql4_dt(),
+  dplyr = sql4_dplyr(),
+  times = 10, unit = "s"
+)
+```
+
+### Comments
+While designing the solutions for the 4th query, my first struggle was obtaining only year from the `CreationDate` column in the `Votes` table. My first approach to this problem was converting the records to dates and using the `format()` function: `format(as.Date(CreationDate), "%Y")`. However, I noticed that this solution was very slow and the `CreationDate` column was stored as strings anyway, so using the `format()` function converted those strings to dates only to change them back to strings of an appropriate format. Therefore, I decided to take advantage of the string operations and get the year from `CreationDate` by simply calling the `substr()` function. It is significantly faster than date conversion and is possible since all dates in the `CreationDate` column have the exact same format with year at the very beginning of the string. Of course, this `substr()` solution is applicable only in this case and I decided to use it because of the speed issue. In general, one should rather use the `format()` version since it is much more universal.  
+
+The second issue I encountered here was the last grouping by `Year` with the `max()` function. It didn't work properly at the beginning, because it was just returning the same data without any changes instead of getting the max value for each group. I needed to solve it differently in each answer. In the base R solution, it was sufficient to use the `aggregate()` function with formula to not lose the information about `Title` column: `aggregate(Count ~ Title+Year, data = joined1, FUN = max)`. In the data.table solution I used the `.SD` operator which stands for **S**ubset of **D**ata and treats each group from the *by* clause as separate data.table. Thanks to that, it chose the max for each group, not for single records. And finally, in the dplyr solution, I just needed to add `Title = Title[which.max(Count)]` in the `summarise()` function to choose only the `Title` for which the value of `Count` was maximal. 
+
+As for the speed, the data.table solution was once more incomparably better than other solutions. However, the results for the remaining 3 functions were much different than in the previous cases. This time, the dplyr solution was even slower than the reference query and the base R solution was around 3 times slower than the SQL query, which is extremely slow.
+
+
+
+# 5) SQL Query 5
+### Reference solution
+```{r}
+sql5 <- function() {
+  sqldf("
+  SELECT Posts.Title, VotesByAge2.OldVotes
+  FROM Posts
+  JOIN (
+      SELECT
+          PostId,
+          MAX(CASE WHEN VoteDate = 'new' THEN Total ELSE 0 END) NewVotes,
+          MAX(CASE WHEN VoteDate = 'old' THEN Total ELSE 0 END) OldVotes,
+          SUM(Total) AS Votes
+      FROM (
+          SELECT
+              PostId,
+              CASE STRFTIME('%Y', CreationDate)
+                  WHEN '2021' THEN 'new'
+                  WHEN '2020' THEN 'new'
+                  ELSE 'old'
+                  END VoteDate,
+              COUNT(*) AS Total
+          FROM Votes
+          WHERE VoteTypeId IN (1, 2, 5)
+          GROUP BY PostId, VoteDate
+      ) AS VotesByAge
+      GROUP BY VotesByAge.PostId
+      HAVING NewVotes=0
+  ) AS VotesByAge2 ON VotesByAge2.PostId=Posts.ID
+  WHERE Posts.PostTypeId=1
+  ORDER BY VotesByAge2.OldVotes DESC
+  LIMIT 10")
+}
+sql5()
+```
+
+**Intuitive interpretation** \
+This query is the most sophisticated of all. It firstly filters the appropriate votes, i.e. those with `VoteTypeId` equal to 1, 2 or 5, and then classifies them as either *new* (created in 2020 or 2021) or *old* (older than 2020). Then, it calculates the number of such votes for each post, in each year. After that, for each post it calculates the maximum number of new votes and old votes, their sum, and after this operation it selects only those posts which have no new votes. Finally, it filters the remaining posts to only questions (`PostTypeId = 1`) and displays the titles of the first 10 posts with the highest number of old votes.
+
+
+### Base R solution
+```{r}
+sql5_base <- function() {
+  VoteTypes125 <- Votes[Votes$VoteTypeId %in% c(1,2,5),]
+  VoteTypes125$Year <- substr(VoteTypes125$CreationDate, 1, 4)
+  
+  # Initially, I used format(as.Date()) for date conversion, however it was very slow:
+  # VoteTypes125$Year <- format(as.Date(VoteTypes125$CreationDate), "%Y")
+  
+  VoteTypes125$VoteDate <- sapply(VoteTypes125$Year, switch, '2021' = "new", '2020' = "new", "old")
+  VotesByAge <- aggregate(VoteTypes125[,c('PostId','VoteDate')], 
+                          by = VoteTypes125[,c('PostId','VoteDate')], FUN = length)
+  colnames(VotesByAge)[c(3,4)] <- c("Total", "Duplicate")
+  VotesByAge2 <- do.call(rbind, by(VotesByAge, VotesByAge$PostId, FUN=function(VotesByAge) 
+    c(NewVotes = max(ifelse(VotesByAge$VoteDate == "new", VotesByAge$Total, as.integer(0))),
+      OldVotes = max(ifelse(VotesByAge$VoteDate == "old", VotesByAge$Total, as.integer(0))),
+      Votes = sum(VotesByAge$Total),
+      PostId = VotesByAge$PostId))) 
+  VotesByAge2 <- as.data.frame(VotesByAge2)
+  VotesByAge2 <- VotesByAge2[VotesByAge2$NewVotes == 0, 1:4]
+  
+  joined <- merge(Posts[Posts$PostTypeId == 1,], VotesByAge2, by.x = "Id", by.y = "PostId1")
+  joined <- joined[, c('Title', 'OldVotes')]
+  answer <- joined[order(joined$OldVotes, decreasing = T), ]
+  rownames(answer) = NULL
+  head(answer, 10)
+}
+```
+
+### data.table solution
+```{r}
+sql5_dt <- function() {
+  VotesByAge <- VotesDT[VoteTypeId %in% c(1,2,5), .(PostId, Year = substr(CreationDate, 1, 4))]
+  VotesByAge <- VotesByAge[, .(PostId, 
+                               VoteDate = fcase(Year == '2021' | Year == '2020', "new", default = "old")), 
+                           ][, .(Total = .N), by = .(PostId, VoteDate)]
+  
+  VotesByAge2 <- VotesByAge[, .(NewVotes = max(fifelse(VoteDate == "new", Total, as.integer(0))), 
+                                OldVotes = max(fifelse(VoteDate == "old", Total, as.integer(0))), 
+                                Votes = sum(Total)), by = PostId][NewVotes == 0]
+  joined <- VotesByAge2[PostsDT, on = c(PostId = "Id")]
+  joined[PostTypeId == 1, .(Title, OldVotes)][order(-OldVotes)][1:10]
+}
+```
+
+### dplyr solution
+```{r}
+sql5_dplyr <- function() {
+  filter(Votes, VoteTypeId %in% c(1,2,5)) %>%
+    transmute(PostId, Year = substr(CreationDate, 1, 4)) %>%
+    transmute(PostId, VoteDate = case_when(Year == '2021' | Year == '2020' ~ "new", TRUE ~ "old")) %>%
+    group_by(PostId, VoteDate) %>%
+    summarise(Total = n()) -> VotesByAge
+  
+  VotesByAge %>% group_by(PostId) %>%
+    summarise(NewVotes = max(if_else(VoteDate == "new", Total, as.integer(0))),
+              OldVotes = max(if_else(VoteDate == "old", Total, as.integer(0))),
+              Votes = sum(Total)) %>%
+    filter(NewVotes == 0) %>%
+    right_join(Posts, c("PostId" = "Id")) %>%
+    filter(PostTypeId == 1) %>%
+    select(Title, OldVotes) %>%
+    arrange(desc(OldVotes)) %>%
+    head(10)
+}
+```
+
+### Accuracy tests
+```{r message=FALSE, warning=FALSE}
+compare_results(sql5(), sql5_base(), sql5_dt(), sql5_dplyr())
+```
+
+### Speed tests
+Identically as in the previous case, I reduced the number of microbenchmark calls for this test to 10. This way I wanted to limit the process of report generation to a reasonable amount of time, since the 5th query also operates on the `Votes` table and therefore, each presented function takes much more time to finish the execution.
+```{r message=FALSE, warning=FALSE}
+microbenchmark::microbenchmark(
+  sqldf = sql5(),
+  base = sql5_base(),
+  data.table = sql5_dt(),
+  dplyr = sql5_dplyr(),
+  times = 10, unit = "s"
+)
+```
+
+### Comments
+The last query was the most complicated one. Just as described in the previous case, changing the format of `CreationDate` column to year was done with the `substr()` function in order to speed up the computation. And the second issue I struggled with, was the creation of `NewVotes`, `OldVotes` and `Votes` columns. It was very easy in the dplyr and data.table solutions, since those packages provide a convenient way of adding necessary columns or creating new ones during aggregation and grouping. However, it was a tough challenge in the base R version, since there is no simple way to add columns during the aggregation. I decided to use the `do.call()` and `by()` functions for this task. The `by()` function applies the specified function to each subset (group) of data frame split by factors defined in the second argument. So, in this case I am grouping by `PostIds` and the function operates on the whole `VotesByAge` table (`FUN=function(VotesByAge)`), since it requires values from several columns for calculations. The output is defined as a vector containing the desired columns: `c(NewVotes, OldVotes, Votes, PostId)`. Then, since the `by()` function returns an object of class *by*, we need to convert it to appropriate format by calling `do.call(rbind, by())`. However, after this conversion the output is still an atomic vector, since I defined it like that, so the last step is to cast it to a data.frame by calling `as.data.frame()`. I realize this solution is not the most optimal, however I was unable to find a better one, so I worked with this version and tried to optimize other procedures as much as possible.
+
+And considering the speed, this time the data.table surprisingly wasn't the fastest solution. Here, the best one turned out to be the reference query which took a few seconds to finish execution. The second one was dplyr version - around 3 times slower than the SQL, while the data.table and base R solution were far behind with similarly slow results.
+
+
+### Conclusions
+Overall, my first observation is that all 3 methods of rewriting the reference query were completely different and suited for different situations. If somebody already has knowledge of SQL, then the dplyr package is definitely the most convenient choice. The commands are very similar to those in SQL, and the general logic for designing  queries is almost the same, making the solutions very intuitive to write. After doing this project, my feeling was that sometimes the dplyr solution would be even easier to use than the actual SQL queries.
+
+On the other hand, if someone has no knowledge regarding SQL, the most intuitive choice would probably be the data.table package. It is usually very fast, quite easy to learn and the notation along with chaining makes the solutions very clean and short. The notation I mentioned has the following format: `data.table[i, j, by]`, which is usually interpreted as: `data.table[subset/order, select/compute, group]`, and the chaining allows to connect several such statements without creating unnecessary, temporary variables.
+
+Lastly, the basic implementation is also useful to practice some basic functions like aggregate or merge. However, compared to other two packages it is rather slow and inconvenient to use and in my opinion it was the most difficult part of this project.
